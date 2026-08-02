@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import re
 import sys
 
 import psycopg2
@@ -65,6 +66,12 @@ def split_sql_statements(sql: str):
     return statements
 
 
+def has_executable_sql(statement: str) -> bool:
+    without_block_comments = re.sub(r"/\*.*?\*/", "", statement, flags=re.DOTALL)
+    without_line_comments = re.sub(r"(?m)^\s*--.*$", "", without_block_comments)
+    return bool(without_line_comments.strip())
+
+
 def main() -> int:
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
@@ -78,7 +85,11 @@ def main() -> int:
         return 1
 
     sql = sql_path.read_text(encoding="utf-8")
-    statements = split_sql_statements(sql)
+    statements = [
+        statement
+        for statement in split_sql_statements(sql)
+        if has_executable_sql(statement)
+    ]
 
     print(f"sql_file = {sql_path}")
     print(f"statements = {len(statements)}")
