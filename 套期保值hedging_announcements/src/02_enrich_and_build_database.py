@@ -291,21 +291,32 @@ def create_final_db(rows: List[Dict]) -> None:
             announcement_title text not null,
             pdf_url text not null,
             commodity text,
-            created_at text not null,
-            updated_at text not null
+            created_at text not null default (datetime('now')),
+            updated_at text not null default (datetime('now'))
         )
+        """
+    )
+    conn.execute(
+        """
+        create trigger set_hedging_announcements_updated_at
+        after update on hedging_announcements
+        for each row
+        when new.updated_at = old.updated_at
+        begin
+            update hedging_announcements
+            set updated_at = datetime('now')
+            where id = old.id;
+        end
         """
     )
     conn.executemany(
         """
         insert into hedging_announcements (
             id, announcement_id, announcement_date, stock_code, company_name,
-            industry, province, announcement_title, pdf_url, commodity,
-            created_at, updated_at
+            industry, province, announcement_title, pdf_url, commodity
         ) values (
             :id, :announcement_id, :announcement_date, :stock_code, :company_name,
-            :industry, :province, :announcement_title, :pdf_url, :commodity,
-            :created_at, :updated_at
+            :industry, :province, :announcement_title, :pdf_url, :commodity
         )
         """,
         rows,
@@ -349,6 +360,19 @@ CREATE TABLE public.hedging_announcements (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE OR REPLACE FUNCTION public.set_hedging_announcements_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_hedging_announcements_updated_at
+BEFORE UPDATE ON public.hedging_announcements
+FOR EACH ROW
+EXECUTE FUNCTION public.set_hedging_announcements_updated_at();
+
 """
     chunks = []
     for start in range(0, len(rows), 400):
@@ -368,15 +392,13 @@ CREATE TABLE public.hedging_announcements (
                         sql_literal(row["announcement_title"]),
                         sql_literal(row["pdf_url"]),
                         sql_literal(row["commodity"]),
-                        sql_literal(row["created_at"]),
-                        sql_literal(row["updated_at"]),
                     ]
                 )
                 + ")"
             )
         chunks.append(
             "INSERT INTO public.hedging_announcements "
-            "(id, announcement_id, announcement_date, stock_code, company_name, industry, province, announcement_title, pdf_url, commodity, created_at, updated_at)\n"
+            "(id, announcement_id, announcement_date, stock_code, company_name, industry, province, announcement_title, pdf_url, commodity)\n"
             "VALUES\n"
             + ",\n".join(values)
             + ";\n\n"

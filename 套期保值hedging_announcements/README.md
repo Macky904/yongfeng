@@ -82,7 +82,8 @@ updated_at
 - `announcement_id`：巨潮公告 ID，数字类型，唯一。
 - `stock_code`：股票代码，保留 6 位文本格式，避免丢失前导 0。
 - `province`：只能是中国省级行政单位，无法判断时为空。
-- `created_at` / `updated_at`：数据库记录创建和更新时间。
+- `created_at`：数据库记录创建时间，写入时由 PostgreSQL 自动记录。
+- `updated_at`：数据库记录修改时间，写入时自动记录，后续更新该行时由触发器自动刷新。
 
 ## 当前数据
 
