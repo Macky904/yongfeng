@@ -2,7 +2,6 @@ import csv
 import re
 import sqlite3
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
@@ -274,7 +273,7 @@ def create_final_db(rows: List[Dict]) -> None:
     conn.execute(
         """
         create table hedging_announcements (
-            id integer primary key,
+            id integer primary key autoincrement,
             announcement_id integer not null unique,
             announcement_date text not null,
             stock_code text check (stock_code is null or stock_code glob '[0-9][0-9][0-9][0-9][0-9][0-9]'),
@@ -312,10 +311,10 @@ def create_final_db(rows: List[Dict]) -> None:
     conn.executemany(
         """
         insert into hedging_announcements (
-            id, announcement_id, announcement_date, stock_code, company_name,
+            announcement_id, announcement_date, stock_code, company_name,
             industry, province, announcement_title, pdf_url, commodity
         ) values (
-            :id, :announcement_id, :announcement_date, :stock_code, :company_name,
+            :announcement_id, :announcement_date, :stock_code, :company_name,
             :industry, :province, :announcement_title, :pdf_url, :commodity
         )
         """,
@@ -339,6 +338,22 @@ def write_csv(rows: List[Dict]) -> None:
         writer.writerows(rows)
 
 
+def load_final_rows() -> List[Dict]:
+    conn = sqlite3.connect(FINAL_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        """
+        select id, announcement_id, announcement_date, stock_code, company_name,
+               industry, province, announcement_title, pdf_url, commodity,
+               created_at, updated_at
+        from hedging_announcements
+        order by id
+        """
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
 def write_postgres_sql(rows: List[Dict]) -> None:
     provinces = ", ".join(sql_literal(value) for value in sorted(VALID_PROVINCES))
     header = f"""BEGIN;
@@ -346,7 +361,7 @@ def write_postgres_sql(rows: List[Dict]) -> None:
 DROP TABLE IF EXISTS public.hedging_announcements;
 
 CREATE TABLE public.hedging_announcements (
-    id INTEGER PRIMARY KEY,
+    id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     announcement_id BIGINT NOT NULL UNIQUE,
     announcement_date DATE NOT NULL,
     stock_code CHAR(6) CHECK (stock_code IS NULL OR stock_code ~ '^[0-9]{{6}}$'),
@@ -382,7 +397,6 @@ EXECUTE FUNCTION public.set_hedging_announcements_updated_at();
                 "("
                 + ", ".join(
                     [
-                        str(row["id"]),
                         str(row["announcement_id"]),
                         sql_literal(row["announcement_date"]),
                         sql_literal(row["stock_code"]),
@@ -398,7 +412,7 @@ EXECUTE FUNCTION public.set_hedging_announcements_updated_at();
             )
         chunks.append(
             "INSERT INTO public.hedging_announcements "
-            "(id, announcement_id, announcement_date, stock_code, company_name, industry, province, announcement_title, pdf_url, commodity)\n"
+            "(announcement_id, announcement_date, stock_code, company_name, industry, province, announcement_title, pdf_url, commodity)\n"
             "VALUES\n"
             + ",\n".join(values)
             + ";\n\n"
@@ -446,9 +460,7 @@ def build() -> None:
     raw_rows = load_raw_rows()
     final_rows: List[Dict] = []
 
-    build_timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
-
-    for idx, row in enumerate(raw_rows, start=1):
+    for row in raw_rows:
         stock_code = row["stock_code"] or None
         info = market_info.get(stock_code or "", {})
         industry = info.get("industry") or None
@@ -460,7 +472,6 @@ def build() -> None:
         commodity = infer_commodity(row["company_name"], industry or "", row["announcement_title"]) or None
         final_rows.append(
             {
-                "id": idx,
                 "announcement_id": int(row["announcement_id"]),
                 "announcement_date": row["announcement_date"],
                 "stock_code": stock_code,
@@ -470,13 +481,11 @@ def build() -> None:
                 "announcement_title": row["announcement_title"],
                 "pdf_url": row["pdf_url"],
                 "commodity": commodity,
-                "created_at": build_timestamp,
-                "updated_at": build_timestamp,
             }
         )
 
     create_final_db(final_rows)
-    write_csv(final_rows)
+    write_csv(load_final_rows())
     write_postgres_sql(final_rows)
     print(f"rows={len(final_rows)}")
     print(f"database={FINAL_DB_PATH}")
