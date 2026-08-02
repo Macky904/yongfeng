@@ -12,3 +12,7 @@ Desktop.ini
 # Python cache
 __pycache__/
 *.py[cod]
+
+# Local exports
+exports/
+*/exports/
