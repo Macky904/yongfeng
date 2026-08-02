@@ -8,3 +8,7 @@ Desktop.ini
 
 # Logs
 *.log
+
+# Python cache
+__pycache__/
+*.py[cod]

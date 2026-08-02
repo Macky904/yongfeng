@@ -9,6 +9,7 @@
   src/
     01_crawl_cninfo_hedging.py
     02_enrich_and_build_database.py
+    03_import_postgres_sql.py
   data/
     raw_cninfo_announcements.sqlite
     hedging_announcements.sqlite
@@ -95,6 +96,22 @@ updated_at
 ```
 
 PostgreSQL 导入文件：
+
+```text
+exports/hedging_announcements_2010_to_2026.sql
+```
+
+## 导入 Supabase/PostgreSQL
+
+如果本机没有 `psql`，直接用 Python 导入：
+
+```powershell
+cd D:\yongfeng2\套期保值hedging_announcements
+$env:DATABASE_URL='postgresql://postgres.xxxxx:你的密码@xxxxx.pooler.supabase.com:5432/postgres?sslmode=require'
+python src\03_import_postgres_sql.py
+```
+
+脚本会读取：
 
 ```text
 exports/hedging_announcements_2010_to_2026.sql
