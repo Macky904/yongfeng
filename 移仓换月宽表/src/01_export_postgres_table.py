@@ -1,8 +1,6 @@
-from pathlib import Path
 import csv
 import os
-import re
-import sys
+from pathlib import Path
 
 import psycopg2
 from psycopg2 import sql
@@ -24,9 +22,8 @@ def parse_table_name(table_name: str):
     else:
         raise ValueError("PG_TABLE 只支持 table 或 schema.table 格式")
 
-    identifier_pattern = re.compile(r"^[A-Za-z_][A-Za-z0-9_\u4e00-\u9fff]*$")
     for value in (schema_name, relation_name):
-        if not identifier_pattern.match(value):
+        if not value or "\x00" in value:
             raise ValueError(f"非法表名片段: {value}")
     return schema_name, relation_name
 
