@@ -10,6 +10,7 @@
     01_crawl_cninfo_hedging.py
     02_enrich_and_build_database.py
     03_import_postgres_sql.py
+    04_incremental_update_postgres.py
   data/
     raw_cninfo_announcements.sqlite
     hedging_announcements.sqlite
@@ -116,3 +117,21 @@ python src\03_import_postgres_sql.py
 ```text
 exports/hedging_announcements_2010_to_2026.sql
 ```
+
+## 增量更新最近公告
+
+默认更新今天和昨天的新公告：
+
+```powershell
+cd D:\yongfeng2\套期保值hedging_announcements
+$env:DATABASE_URL='postgresql://postgres.xxxxx:你的密码@xxxxx.pooler.supabase.com:5432/postgres?sslmode=require'
+python src\04_incremental_update_postgres.py
+```
+
+也可以指定日期范围：
+
+```powershell
+python src\04_incremental_update_postgres.py 2026-08-02 2026-08-03
+```
+
+脚本会按 `announcement_id` 增量写入 PostgreSQL，已有公告会更新字段，新公告会自动生成 `id`、`created_at`、`updated_at`。
