@@ -16,3 +16,11 @@ __pycache__/
 # Local exports
 exports/
 */exports/
+
+# Python virtual environment
+.venv/
+
+# Local secrets (do NOT commit)
+.env
+.env.*
+!.env.example
