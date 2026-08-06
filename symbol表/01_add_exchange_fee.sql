@@ -10,6 +10,6 @@ UPDATE public.symbol SET exchange_fee = '成交金额万分之 0.5（0.05‰）'
 UPDATE public.symbol SET exchange_fee = '成交金额万分之 0.5（0.05‰）' WHERE exchange_code = 'SHFE' AND symbol_code = 'CU';
 UPDATE public.symbol SET exchange_fee = '3 元/手' WHERE exchange_code = 'SHFE' AND symbol_code = 'AL';
 UPDATE public.symbol SET exchange_fee = '3 元/手' WHERE exchange_code = 'SHFE' AND symbol_code = 'ZN';
-UPDATE public.symbol SET exchange_fee = '约 20 元/手' WHERE exchange_code = 'INE' AND symbol_code = 'SC';
+UPDATE public.symbol SET exchange_fee = '20 元/手' WHERE exchange_code = 'INE' AND symbol_code = 'SC';
 UPDATE public.symbol SET exchange_fee = '成交金额万分之 0.1（0.1‱）' WHERE exchange_code = 'INE' AND symbol_code = 'BC';
 UPDATE public.symbol SET exchange_fee = '成交金额万分之 1（1‱）；非 1/5/9 合约万分之 0.1' WHERE exchange_code = 'DCE' AND symbol_code = 'I';
