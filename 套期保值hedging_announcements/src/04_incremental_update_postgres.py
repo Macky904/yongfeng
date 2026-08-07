@@ -29,12 +29,53 @@ enrich_mod = load_module(SRC_DIR / "02_enrich_and_build_database.py", "enrich_he
 
 
 def parse_dates():
+    """确定抓取日期范围。
+
+    硬性约束：无论默认值还是手工传参，抓取区间的结束日期都不得超过
+    运行当天（北京时间）。即 8 月 7 日运行，最多只抓到 8 月 7 日，
+    绝不会去抓 8 月 8 日及以后的公告。
+    """
     today = datetime.now(BEIJING_TZ).date()
+    today_str = today.isoformat()
     default_start = today - timedelta(days=1)
-    default_end = today
+
     start_date = sys.argv[1] if len(sys.argv) > 1 else default_start.isoformat()
-    end_date = sys.argv[2] if len(sys.argv) > 2 else default_end.isoformat()
-    return start_date, end_date
+    end_date = sys.argv[2] if len(sys.argv) > 2 else today_str
+
+    # 上限裁剪：任何一端都不允许晚于今天
+    if start_date > today_str:
+        print(f"start_date {start_date} 晚于今天，已裁剪为 {today_str}")
+        start_date = today_str
+    if end_date > today_str:
+        print(f"end_date {end_date} 晚于今天，已裁剪为 {today_str}")
+        end_date = today_str
+    if start_date > end_date:
+        start_date = end_date
+
+    return start_date, end_date, today_str
+
+
+def drop_future_rows(rows, today_str: str):
+    """丢弃公告日期晚于今天的记录。
+
+    巨潮网在傍晚常会放出「次日披露」的公告（例如 8 月 7 日 19:00 已能
+    看到日期标记为 8 月 8 日的公告）。按用户要求，这类未来日期的数据
+    一律不入库，留到那一天再抓。
+    """
+    kept, dropped = [], []
+    for row in rows:
+        date_value = (row.get("announcement_date") or "").strip()
+        if date_value and date_value > today_str:
+            dropped.append(row)
+        else:
+            kept.append(row)
+
+    print(f"today = {today_str}")
+    print(f"dropped_future_rows = {len(dropped)}")
+    if dropped:
+        preview = sorted({r.get("announcement_date", "") for r in dropped})
+        print(f"dropped_future_dates = {', '.join(preview)}")
+    return kept
 
 
 def crawl_range(start_date: str, end_date: str):
@@ -146,8 +187,13 @@ def upsert_postgres(rows):
 
 
 def main():
-    start_date, end_date = parse_dates()
+    start_date, end_date, today_str = parse_dates()
     raw_rows = crawl_range(start_date, end_date)
+    print(f"crawled_rows = {len(raw_rows)}")
+
+    # 第二道防线：即使接口返回了未来日期的公告，也在入库前剔除
+    raw_rows = drop_future_rows(raw_rows, today_str)
+
     market_info = load_market_info()
     final_rows = enrich_rows(raw_rows, market_info)
     print(f"fetched_rows = {len(raw_rows)}")
