@@ -1,4 +1,5 @@
 import csv
+import io
 import re
 import sqlite3
 import time
@@ -6,6 +7,18 @@ from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
 import requests
+
+try:
+    import pdfplumber
+except ImportError:
+    pdfplumber = None
+
+PDF_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+}
+# 进程内缓存：同一 PDF 不重复下载（同公告一般不会重复，但管理制度/主公告同公司可能共享）
+_PDF_TEXT_CACHE: Dict[str, str] = {}
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -179,11 +192,43 @@ def detect_commodities(text: str) -> str:
     return "、".join(name for name in COMMODITY_ALIASES if name in found)
 
 
-def infer_commodity(company_name: str, industry: str, title: str) -> str:
+def download_pdf_text(pdf_url: str, timeout: int = 30) -> str:
+    """下载并抽取 PDF 正文文本，供 infer_commodity 在标题无品种时回退使用。
+
+    设计原则：
+    - 带进程内缓存，同一 URL 不重复下载；
+    - 任何失败（网络/解析）都返回空串，绝不让整批中断；
+    - 不依赖数据库、不写文件到业务目录（临时文件用完即删）。
+    """
+    if not pdf_url:
+        return ""
+    if pdf_url in _PDF_TEXT_CACHE:
+        return _PDF_TEXT_CACHE[pdf_url]
+    text = ""
+    try:
+        resp = requests.get(pdf_url, headers=PDF_HEADERS, timeout=timeout)
+        resp.raise_for_status()
+        if pdfplumber:
+            with pdfplumber.open(io.BytesIO(resp.content)) as pdf:
+                parts = [page.extract_text() or "" for page in pdf.pages]
+            text = "\n".join(parts)
+    except Exception as exc:  # noqa: BLE001 - 抽取失败不应中断整批
+        print(f"[pdf] download/parse failed {pdf_url}: {exc}")
+        text = ""
+    _PDF_TEXT_CACHE[pdf_url] = text
+    return text
+
+
+def infer_commodity(company_name: str, industry: str, title: str, pdf_text: str = None) -> str:
     text = normalize_text(company_name, title)
     direct = detect_commodities(text)
     if direct:
         return direct
+    # 标题/公司名没命中品种时，回退扫描 PDF 正文（解决"品种只写在正文"的公告）
+    if pdf_text:
+        body = detect_commodities(normalize_text(pdf_text))
+        if body:
+            return body
     for keys, commodity in COMPANY_RULES:
         if any(key in text for key in keys):
             return commodity

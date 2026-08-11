@@ -127,7 +127,15 @@ def enrich_rows(raw_rows, market_info):
         ) or None
         if province not in enrich_mod.VALID_PROVINCES:
             province = None
-        commodity = enrich_mod.infer_commodity(row["company_name"], industry or "", row["announcement_title"]) or None
+        # 标题/公司名抽不到品种时，回退下载 PDF 正文补抽（增量数量小，可接受）
+        pdf_text = ""
+        try:
+            pdf_text = enrich_mod.download_pdf_text(row["pdf_url"])
+        except Exception:  # noqa: BLE001 - 单条下载失败不影响整批
+            pdf_text = ""
+        commodity = enrich_mod.infer_commodity(
+            row["company_name"], industry or "", row["announcement_title"], pdf_text=pdf_text
+        ) or None
         final_rows.append(
             {
                 "announcement_id": int(row["announcement_id"]),
