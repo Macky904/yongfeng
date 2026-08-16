@@ -1,6 +1,26 @@
-import psycopg2
+"""
+建表脚本：在 Supabase/PostgreSQL 中创建 public.news_articles
 
-DSN = "postgresql://postgres.tuiplgpjaucqjktzcnnn:Lyx2026.123@aws-1-ap-south-1.pooler.supabase.com:5432/postgres"
+用法（PowerShell）：
+  $env:DATABASE_URL='postgresql://postgres.xxxxx:密码@xxxxx.pooler.supabase.com:5432/postgres?sslmode=require'
+  python build_news_articles.py
+
+连接串请放在环境变量 DATABASE_URL，不要硬编码进仓库。
+"""
+import os
+import sys
+
+try:
+    import psycopg2
+except ImportError:
+    print("请先安装: pip install psycopg2-binary")
+    sys.exit(1)
+
+DSN = os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_DB_URL")
+if not DSN:
+    print("错误: 请设置环境变量 DATABASE_URL（或 SUPABASE_DB_URL）")
+    print("示例: $env:DATABASE_URL='postgresql://postgres.xxx:密码@xxx.pooler.supabase.com:5432/postgres?sslmode=require'")
+    sys.exit(1)
 
 sql = r"""
 -- 0) 触发器依赖函数（必须先建，否则触发器创建失败）
@@ -57,11 +77,14 @@ cur = conn.cursor()
 cur.execute(sql)
 print("news_articles table built OK")
 
-# 验证结构
-cur.execute("SELECT column_name, data_type FROM information_schema.columns WHERE table_schema='public' AND table_name='news_articles' ORDER BY ordinal_position;")
+cur.execute(
+    "SELECT column_name, data_type FROM information_schema.columns "
+    "WHERE table_schema='public' AND table_name='news_articles' ORDER BY ordinal_position;"
+)
 print("\n=== columns ===")
 for c in cur.fetchall():
     print(c)
 cur.execute("SELECT count(*) FROM public.news_articles;")
 print("\nrow count:", cur.fetchone()[0])
-cur.close(); conn.close()
+cur.close()
+conn.close()

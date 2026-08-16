@@ -24,3 +24,9 @@ exports/
 .env
 .env.*
 !.env.example
+
+# Local credentials / cookies (do NOT commit)
+accounts.txt
+news_articles/accounts.txt
+cookies.txt
+news_articles/cookies.txt

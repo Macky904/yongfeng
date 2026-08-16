@@ -1,0 +1,7 @@
+# cookies.example.txt — 方式B: cookie 导入（免登录，最稳）
+# 从浏览器 DevTools → Application → Cookies → https://x.com 复制 auth_token 与 ct0 的值
+# 每行:  账号名:auth_token=...; ct0=...
+# 注意: auth_token / ct0 是 HttpOnly cookie，JS 读不到，必须手动从 Cookies 面板复制
+# 示例（请勿提交真实值；真实值写在 cookies.txt，已被 .gitignore 忽略）:
+scraper1:auth_token=你的auth_token值; ct0=你的ct0值
+scraper2:auth_token=另一个号的auth_token; ct0=另一个号的ct0

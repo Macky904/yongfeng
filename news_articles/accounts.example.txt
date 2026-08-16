@@ -1,0 +1,6 @@
+# 每行一个 Twitter 账号，格式: 用户名:密码:注册邮箱:邮箱密码
+# 例: mybot01:Passw0rd!:mybot01@proton.me:MailPass
+# 注意：
+#   - 至少需要 1 个可用账号，twscrape 才能绕过官方 API 限制去抓取
+#   - 账号越老、越活跃，越不容易被限流
+#   - 复制本文件为 accounts.txt 后填入真实账号（accounts.txt 已被 .gitignore 忽略，不会入库）
