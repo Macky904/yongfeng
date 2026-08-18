@@ -7,14 +7,30 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import logging
 import psycopg2
+import socket
 
+# 全局网络超时：防止 psycopg2 / 巨潮请求无限挂起，进而被计划任务调度器
+# 以 STATUS_CONTROL_C_EXIT (0xC000013A) 杀掉（此前 8/16 那次就因此失败）。
+socket.setdefaulttimeout(30)
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 SRC_DIR = BASE_DIR / "src"
 DATA_DIR = BASE_DIR / "data"
 RAW_DB_PATH = DATA_DIR / "raw_cninfo_announcements.sqlite"
 BEIJING_TZ = timezone(timedelta(hours=8))
+
+# 日志：同时写文件与控制台，便于计划任务排错
+LOG_DIR = DATA_DIR / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+_log_path = LOG_DIR / f"hedging_update_{datetime.now(BEIJING_TZ).strftime('%Y-%m-%d')}.log"
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    handlers=[logging.FileHandler(_log_path, encoding="utf-8"), logging.StreamHandler()],
+)
+log = logging.getLogger("hedging_update")
 
 
 def load_module(path: Path, name: str):
@@ -116,6 +132,7 @@ def load_market_info():
 
 def enrich_rows(raw_rows, market_info):
     final_rows = []
+    unresolved = []
     for row in sorted(raw_rows, key=lambda item: (item["announcement_date"], item["announcement_time_ms"] or 0, item["announcement_id"])):
         stock_code = row["stock_code"] or None
         info = market_info.get(stock_code or "", {})
@@ -136,6 +153,8 @@ def enrich_rows(raw_rows, market_info):
         commodity = enrich_mod.infer_commodity(
             row["company_name"], industry or "", row["announcement_title"], pdf_text=pdf_text
         ) or None
+        if not commodity:
+            unresolved.append(row)
         final_rows.append(
             {
                 "announcement_id": int(row["announcement_id"]),
@@ -149,6 +168,15 @@ def enrich_rows(raw_rows, market_info):
                 "commodity": commodity,
             }
         )
+    if unresolved:
+        log.warning("unclassified=%d (PDF 原文已尝试读取；请根据以下公告补充词典/公司规则)", len(unresolved))
+        for row in unresolved:
+            log.warning(
+                "UNCLASSIFIED id=%s company=%s title=%s pdf=%s",
+                row["announcement_id"], row["company_name"], row["announcement_title"], row["pdf_url"],
+            )
+    else:
+        log.info("unclassified=0")
     return final_rows
 
 

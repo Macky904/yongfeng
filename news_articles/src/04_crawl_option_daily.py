@@ -17,15 +17,25 @@ import sys
 import time
 import socket
 import random
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import psycopg2
 import akshare as ak
 from datetime import date
+from pathlib import Path
 
 # 安全网：所有网络请求最多 25s 超时，避免无超时的请求在后台无限挂起
 socket.setdefaulttimeout(25)
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 START = date(2026, 7, 1)
+BASE_DIR = Path(__file__).resolve().parents[1]
+LOG_DIR = BASE_DIR / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+LOG = logging.getLogger("option_daily")
+# 新浪接口有访问频率限制。4 个并发连接将原本逐个等待的合约请求缩短为约 1/4，
+# 同时仍保留每个请求的重试机制；可用 OPTION_WORKERS=1 临时退回串行。
+OPTION_WORKERS = max(1, min(int(os.environ.get("OPTION_WORKERS", "4")), 6))
 
 # 用户想要的品种 -> akshare/新浪实际品种名
 VARIETY_MAP = {
@@ -120,21 +130,41 @@ def upsert(rows):
 
 
 def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=[
+            logging.FileHandler(LOG_DIR / f"option_daily_{date.today().isoformat()}.log", encoding="utf-8"),
+            logging.StreamHandler(),
+        ],
+    )
     dry = "--dry" in sys.argv
     total = 0
+    LOG.info("=== option daily update START (workers=%d) ===", OPTION_WORKERS)
     for variety, sina_name in VARIETY_MAP.items():
         t0 = time.time()
         codes = enumerate_codes(sina_name)
         print(f"\n[{variety}] ({sina_name}) 合约数={len(codes)}")
         rows = []
-        for i, (sym, otype, underlying, strike) in enumerate(codes):
-            hist = fetch_history(sym)
-            for (d, o, h, l, c, v) in hist:
-                rows.append((variety, sym, otype, underlying, strike,
-                             d, o, h, l, c, v))
-            if (i + 1) % 50 == 0:
-                print(f"  ...已处理 {i+1}/{len(codes)} 合约，累计行 {len(rows)}")
-            time.sleep(0.08 + random.random() * 0.06)
+        # 同一品种内并发抓取、在主线程汇总，避免共享数据库连接。
+        with ThreadPoolExecutor(max_workers=OPTION_WORKERS, thread_name_prefix="option") as pool:
+            future_meta = {
+                pool.submit(fetch_history, sym): (sym, otype, underlying, strike)
+                for sym, otype, underlying, strike in codes
+            }
+            for i, future in enumerate(as_completed(future_meta), 1):
+                sym, otype, underlying, strike = future_meta[future]
+                try:
+                    hist = future.result()
+                except Exception as exc:  # 单个合约失败不阻断当日其它合约
+                    LOG.warning("history worker failed %s: %s", sym, exc)
+                    hist = []
+                rows.extend(
+                    (variety, sym, otype, underlying, strike, d, o, h, l, c, v)
+                    for d, o, h, l, c, v in hist
+                )
+                if i % 50 == 0 or i == len(codes):
+                    LOG.info("[%s] processed %d/%d contracts, rows=%d", variety, i, len(codes), len(rows))
         print(f"[{variety}] 抓取行数={len(rows)}  用时 {time.time()-t0:.1f}s")
         if dry:
             if rows:
@@ -143,6 +173,7 @@ def main():
         n = upsert(rows)
         total += n
         print(f"[{variety}] 已写入 {n} 行")
+    LOG.info("=== option daily update DONE. total rows=%d ===", total)
     print(f"\nDONE. 总写入行数={total}")
 
 
