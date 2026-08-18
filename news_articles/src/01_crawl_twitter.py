@@ -39,6 +39,9 @@ from common import is_relevant  # noqa: E402
 BASE_DIR = Path(__file__).resolve().parents[1]
 ACCOUNTS_FILE = BASE_DIR / "accounts.txt"   # 方式A 账号密码登录: 每行 用户名:密码:注册邮箱:邮箱密码
 COOKIES_FILE = BASE_DIR / "cookies.txt"     # 方式B cookie 导入: 每行 账号名:auth_token=...; ct0=...
+# twscrape 默认把 accounts.db 放在“当前启动目录”。计划任务或从 System32 手动启动时
+# 该目录通常不可写，必须固定到项目目录，不能依赖 cwd。
+TWITTER_DB_PATH = Path(__file__).resolve().with_name("accounts.db")
 
 # 抓取入库后自动做结构化提取（topic/tags/ai_summary/impact_score），依赖同目录 02_enrich_twitter.py
 try:
@@ -370,7 +373,7 @@ async def main_async():
         or os.getenv("HTTP_PROXY")
         or None
     )
-    api = API(proxy=proxy)
+    api = API(pool=str(TWITTER_DB_PATH), proxy=proxy)
     await setup_accounts(api)  # 两种模式都需要已登录的账号池
 
     # 账号池仍为空 → 没法抓，直接退出（常见的坑：忘了填 accounts.txt / cookies.txt）
