@@ -9,6 +9,11 @@ Desktop.ini
 # Logs
 *.log
 
+# Runtime databases and generated data snapshots (kept locally, never in Git)
+*.sqlite
+*.sqlite-journal
+*.db
+
 # Python cache
 __pycache__/
 *.py[cod]

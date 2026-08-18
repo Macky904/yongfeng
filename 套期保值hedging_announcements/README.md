@@ -135,3 +135,9 @@ python src\04_incremental_update_postgres.py 2026-08-02 2026-08-03
 ```
 
 脚本会按 `announcement_id` 增量写入 PostgreSQL，已有公告会更新字段，新公告会自动生成 `id`、`created_at`、`updated_at`。
+# 套期保值公告数据
+
+## 本地运行数据
+
+`data/*.sqlite` 与 `exports/` 下的 CSV/SQL 都是运行时生成的数据快照，不纳入 Git。
+日常增量任务会自动创建或更新本地 SQLite 缓存，并将结果写入 PostgreSQL；如需在新电脑保留历史缓存，请从备份恢复这些文件，或运行全量抓取脚本重建。
