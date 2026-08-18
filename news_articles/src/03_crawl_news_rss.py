@@ -1,17 +1,25 @@
 """
-03_crawl_news_rss.py — 抓取国际期货/大宗商品新闻 RSS，写入 public.news_articles。
+03_crawl_news_rss.py — 抓取国际大宗商品/期货新闻 RSS，写入 public.news_articles。
 
-数据源（免费、零密钥）：
-  - Investing.com   新闻 RSS
-  - Kitco           贵金属/大宗商品新闻 RSS
-  - MarketWatch     综合财经 RSS
+数据源（权威大宗商品机构，免费、零密钥，配合 common.is_relevant 只收商品相关）：
+  - Investing.com 商品期货新闻（news_11.rss，大量转载 Reuters 原文）
+  - Investing.com 商品分析评论（commodities.rss）
+  - Bloomberg 市场新闻（markets feed，含 oil/gold 等商品）
+  - CNBC 商品期货（Futures & Commodities）
+  - U.S. EIA Today in Energy（美国能源信息署官方能源快讯）
+
+说明：
+  1) Reuters 官方免费 RSS 已于早前停用（商品新闻转为付费 LSEG 产品），
+     故通过 Investing 商品板块转载的 Reuters 原文获取；author 含 "Reuters" 时
+     来源自动标为 Reuters。
+  2) 入库前统一经 common.is_relevant 商品关键词白名单过滤，只留商品期货相关，
+     拦截个股/鸡汤/地震/债券等无关内容。
+  3) requests 自动读取系统 HTTPS_PROXY，沙箱出网需走代理。
 
 运行：
   $env:DATABASE_URL="postgresql://..."
   python src/03_crawl_news_rss.py          # 抓全部已配置的 RSS
-  python src/03_crawl_news_rss.py --dry    # 只打印前 3 条，不写库（供审核）
-
-说明：requests 自动读取系统 HTTPS_PROXY，沙箱出网需走代理（与 twscrape 同理）。
+  python src/03_crawl_news_rss.py --dry    # 只打印前几条，不写库（供审核）
 """
 import argparse
 import json
@@ -26,10 +34,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
 from common import upsert_news  # noqa: E402
 
 # ---- RSS 源配置：(source_name, url, original_lang) ----
-# 注：Kitco RSS 目前返回空（已失效），Investing 商品 RSS 404，故先用以下两个稳定源。
 FEEDS = [
-    ("Investing.com", "https://www.investing.com/rss/news.rss", "en"),
-    ("MarketWatch", "https://feeds.content.dowjones.io/public/rss/mw_topstories", "en"),
+    ("Investing.com", "https://www.investing.com/rss/news_11.rss", "en"),
+    ("Investing.com", "https://www.investing.com/rss/commodities.rss", "en"),
+    ("Bloomberg", "https://feeds.bloomberg.com/markets/news.rss", "en"),
+    ("CNBC", "https://www.cnbc.com/id/15839171/device/rss/rss.html", "en"),
+    ("U.S. EIA", "https://www.eia.gov/rss/todayinenergy.xml", "en"),
 ]
 
 HEADERS = {
@@ -37,10 +47,20 @@ HEADERS = {
 }
 
 
+def resolve_source(name: str, author: str):
+    """根据 author 识别 Reuters/Bloomberg 转载，归属到真实来源机构。"""
+    a = (author or "").lower()
+    if "reuters" in a:
+        return "Reuters"
+    if "bloomberg" in a:
+        return "Bloomberg"
+    return name
+
+
 def fetch_feed(name: str, url: str, lang: str, limit: int = 20):
     """抓取单个 RSS，返回构造好的行列表。"""
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=20)
+        resp = requests.get(url, headers=HEADERS, timeout=25)
         resp.raise_for_status()
     except Exception as exc:
         print(f"feed_failed name={name} url={url} reason={exc}")
@@ -60,11 +80,13 @@ def fetch_feed(name: str, url: str, lang: str, limit: int = 20):
         elif getattr(e, "updated_parsed", None):
             pub = datetime(*e.updated_parsed[:6], tzinfo=timezone.utc)
         author = e.get("author") or name
+        source_name = resolve_source(name, author)
         raw = {
             "title": title,
             "link": link,
             "summary": summary,
             "published": e.get("published"),
+            "author": author,
         }
         rows.append({
             "title": title,
@@ -72,11 +94,9 @@ def fetch_feed(name: str, url: str, lang: str, limit: int = 20):
             "content": content,
             "original_content": content,
             "source_url": link,
-            "source_name": name,
+            "source_name": source_name,
             "author": author,
             "original_lang": lang,
-            "platform": "rss",
-            "raw_json": json.dumps(raw, ensure_ascii=False, default=str),
             "pub_date": pub,
         })
     print(f"feed={name} url={url} entries={len(parsed.entries)} kept={len(rows)}")
@@ -85,7 +105,7 @@ def fetch_feed(name: str, url: str, lang: str, limit: int = 20):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dry", action="store_true", help="只打印前 3 条，不写库")
+    ap.add_argument("--dry", action="store_true", help="只打印前几条，不写库")
     ap.add_argument("--limit", type=int, default=20, help="每个源最多抓取条数")
     args = ap.parse_args()
 
@@ -103,8 +123,8 @@ def main():
     rows = uniq
 
     if args.dry:
-        print(f"\n=== DRY RUN: 共 {len(rows)} 条，仅展示前 3 条 ===")
-        for r in rows[:3]:
+        print(f"\n=== DRY RUN: 共 {len(rows)} 条，仅展示前 5 条 ===")
+        for r in rows[:5]:
             print(f"[{r['source_name']}] {r['title']}")
             print(f"    {r['source_url']}  |  {r['pub_date']}")
             print(f"    {r['content'][:120]}")

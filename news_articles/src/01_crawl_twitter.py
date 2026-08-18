@@ -26,11 +26,14 @@ import asyncio
 import json
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import psycopg2
 from twscrape import API, gather
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
+from common import is_relevant  # noqa: E402
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 ACCOUNTS_FILE = BASE_DIR / "accounts.txt"   # 方式A 账号密码登录: 每行 用户名:密码:注册邮箱:邮箱密码
@@ -48,17 +51,54 @@ try:
 except Exception:
     _HAS_EXTRACT = False
 
-# ---- 监测目标：目前只监测这些账号（按需求先只放 kannbwx = Karen Braun，农业/大宗商品分析师）----
-# 想加账号直接在列表里加，如 ["kannbwx", "zerohedge"]
-MONITOR_USERS = ["kannbwx"]
+# ---- Twitter/X 监测名单 ------------------------------------------------------
+# 核心账号每天抓取：独立农业/大宗商品分析与农业媒体。
+CORE_MONITOR_USERS = ["kannbwx", "Tyne_Ag"]
+# 官方账号按天轮换抓取，避免单个免费登录身份被大量历史/搜索请求耗尽额度。
+# 均为公开机构账号；即使其中某个账号改名/停用，单个空结果也不会影响其它来源。
+ROTATING_MONITOR_USERS = [
+    "USDA_NASS",       # USDA National Agricultural Statistics Service
+    "USDAFAS",         # USDA Foreign Agricultural Service
+    "EIAgov",          # U.S. Energy Information Administration
+    "CFTCgov",         # U.S. Commodity Futures Trading Commission
+    "NWSCPC",          # NOAA Climate Prediction Center
+    "DroughtMonitor",  # U.S. Drought Monitor
+    "FAO",             # UN Food and Agriculture Organization
+]
+# 每日额外抓取几个官方账号。可用环境变量 TWITTER_ROTATING_USERS_PER_RUN 调整为 0~7。
+ROTATING_USERS_PER_RUN = max(0, min(
+    int(os.environ.get("TWITTER_ROTATING_USERS_PER_RUN", "1")),
+    len(ROTATING_MONITOR_USERS),
+))
 
 # ---- 历史补抓：库为空时，从这天起补抓（本需求：2026 年以来）----
 START_DATE = "2026-01-01"
-BACKFILL_LIMIT = 1000                         # 首次补历史单次抓取上限（可按需调大）
+# 按账号自定义补抓起始日期（key = handle，缺省用 START_DATE）。用户要求 Tyne_Ag 补 2026 年至今。
+ACCOUNT_SINCE = {
+    "Tyne_Ag": "2026-01-01",
+}
+BACKFILL_LIMIT = 150                          # 免费账号通常约 145 条历史额度，避免一次性触发限流
 
 # ---- 关键词搜索模式（仅在命令行传入查询词时启用）----
 DEFAULT_QUERY = "futures OR 期货"
-DEFAULT_LIMIT = 50                            # 增量模式单次抓取条数上限
+DEFAULT_LIMIT = 30                            # 增量模式单账号上限；核心2个+官方1个约90条/日
+
+
+def selected_monitor_users(run_date: date = None):
+    """返回当日抓取账号：核心账号 + 轮换官方账号。
+
+    轮换位置由日期决定，因此任务重跑仍是同一批账号；次日自动切换，且不会遗漏
+    已入库数据（source_url 唯一键会去重）。
+    """
+    run_date = run_date or datetime.now(timezone.utc).date()
+    if not ROTATING_USERS_PER_RUN:
+        return CORE_MONITOR_USERS.copy()
+    start = run_date.toordinal() % len(ROTATING_MONITOR_USERS)
+    rotating = [
+        ROTATING_MONITOR_USERS[(start + offset) % len(ROTATING_MONITOR_USERS)]
+        for offset in range(ROTATING_USERS_PER_RUN)
+    ]
+    return CORE_MONITOR_USERS + rotating
 
 
 def load_accounts():
@@ -128,20 +168,21 @@ async def setup_accounts(api: API):
 
 
 def get_last_pub_date(username: str):
-    """查库里该账号已存的最新发布时间，用于增量抓取（只抓更晚的）。无则返回 None。"""
+    """查库里该账号已存的最新发布时间，用于增量抓取（只抓更晚的）。无则返回 None。
+    按 source_url 里的用户名（x.com/<username>/status/...）区分账号，避免多个
+    监测账号相互串扰（否则新账号会被误判为增量，补不了历史）。"""
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
         return None
     try:
-        with psycopg2.connect(database_url) as conn:
+        with psycopg2.connect(database_url, connect_timeout=15) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
                     select max(pub_date) from public.news_articles
-                    where platform='twitter'
-                      and raw_json->'author'->>'username' = %(u)s
+                    where source_name='twitter' and lower(source_url) like %s
                     """,
-                    {"u": username},
+                    (f"https://x.com/{username.lower()}/%",),
                 )
                 return cur.fetchone()[0]
     except Exception as exc:
@@ -195,7 +236,7 @@ async def scrape_accounts(api: API, users, limit: int):
     for user in users:
         last = get_last_pub_date(user)
         if last is None:
-            since_str = START_DATE
+            since_str = ACCOUNT_SINCE.get(user, START_DATE)
             lim = BACKFILL_LIMIT
             mode = "backfill"
         else:
@@ -249,15 +290,29 @@ def upsert_postgres(rows):
         print("imported_rows = 0 (无新推文)")
         return 0
 
+    # 相关性过滤：标题+正文合并判断，命中商品白名单才入库（治本，拦截无关推文）
+    kept, dropped = [], 0
+    for r in rows:
+        text = f"{r.get('title') or ''} {r.get('content') or ''}"
+        if is_relevant(text):
+            kept.append(r)
+        else:
+            dropped += 1
+    print(f"relevance_filter: kept={len(kept)} dropped={dropped}")
+    if not kept:
+        print("imported_rows = 0 (全部被相关性过滤)")
+        return 0
+    rows = kept
+
     sql = """
         insert into public.news_articles (
             title, original_title, content, original_content,
             source_url, source_name, author, original_lang,
-            platform, raw_json, pub_date
+            pub_date
         ) values (
             %(title)s, %(original_title)s, %(content)s, %(original_content)s,
             %(source_url)s, %(source_name)s, %(author)s, %(original_lang)s,
-            %(platform)s, %(raw_json)s, %(pub_date)s
+            %(pub_date)s
         )
         on conflict (source_url) do update set
             content = excluded.content,
@@ -265,7 +320,7 @@ def upsert_postgres(rows):
             author = excluded.author,
             updated_at = now()
     """
-    with psycopg2.connect(database_url) as conn:
+    with psycopg2.connect(database_url, connect_timeout=15) as conn:
         with conn.cursor() as cur:
             cur.executemany(sql, rows)
             # 结构化提取：填充 topic/tags/ai_summary/impact_score，并消除 title 冗余
@@ -282,7 +337,7 @@ def upsert_postgres(rows):
                          topic, tags, impact, r["source_url"]),
                     )
             cur.execute(
-                "select count(*) from public.news_articles where platform='twitter'"
+                "select count(*) from public.news_articles where source_name='twitter'"
             )
             total = cur.fetchone()[0]
     print(f"imported_rows = {len(rows)}")
@@ -314,8 +369,9 @@ async def main_async():
         rows = await scrape_search(api, query, limit)
     else:
         limit = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else DEFAULT_LIMIT
-        print(f"mode=monitor users={MONITOR_USERS} limit={limit}")
-        rows = await scrape_accounts(api, MONITOR_USERS, limit)
+        users = selected_monitor_users()
+        print(f"mode=monitor users={users} limit={limit} rotating={ROTATING_USERS_PER_RUN}")
+        rows = await scrape_accounts(api, users, limit)
     return upsert_postgres(rows)
 
 

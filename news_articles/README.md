@@ -33,19 +33,25 @@ $env:DATABASE_URL="postgresql://postgres.xxxxx:密码@xxxxx.pooler.supabase.com:
 
 ### 监测账号配置
 
-打开 [`src/01_crawl_twitter.py`](./src/01_crawl_twitter.py)，修改顶部 `MONITOR_USERS`：
+打开 [`src/01_crawl_twitter.py`](./src/01_crawl_twitter.py)，修改顶部监测名单：
 
 ```python
-# 目前只监测 kannbwx（按需求）
-MONITOR_USERS = ["kannbwx"]
-# 想加账号直接在列表里加，如 ["kannbwx", "zerohedge"]
+# 每天监测核心农业/大宗商品账号
+CORE_MONITOR_USERS = ["kannbwx", "Tyne_Ag"]
+# USDA、EIA、CFTC、NOAA CPC、干旱监测和 FAO 等官方账号按天轮换
+ROTATING_MONITOR_USERS = ["USDA_NASS", "USDAFAS", "EIAgov", "CFTCgov", "NWSCPC", "DroughtMonitor", "FAO"]
 ```
 
 脚本默认**增量监测**：每次只抓比库里该账号最新推文更晚的内容；
 配合 `source_url`(推文永久链接) 唯一键，已入库的不会重复写入。
 
+默认每天抓取两个核心账号和一个轮换官方账号（约 90 条请求上限），以适配免费
+Twitter 登录身份的额度。可通过环境变量 `TWITTER_ROTATING_USERS_PER_RUN` 将轮换数调为 `0` 至 `7`。
+没有稳定 RSS 的 USDA 作物进度、WASDE、NOAA/CPC 图表与美国干旱监测页面，保留为权威人工核验来源；
+它们对应的官方 Twitter 更新会进入本监测名单。
+
 **历史补抓**：首次运行（库里该账号尚无数据）会从 `START_DATE`(默认 `2026-01-01`) 起补抓，
-`BACKFILL_LIMIT`(默认 1000) 控制单次上限。之后运行自动转增量（带 1 天重叠缓冲，防漏推文）。
+`BACKFILL_LIMIT`(默认 150，适配免费账号常见额度) 控制单次上限。之后运行自动转增量（带 1 天重叠缓冲，防漏推文）。
 若要改回溯起点，改脚本顶部 `START_DATE` 即可。
 
 ### 运行
