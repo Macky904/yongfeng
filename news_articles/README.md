@@ -63,7 +63,13 @@ python src/01_crawl_twitter.py
 python src/01_crawl_twitter.py 100
 # 临时切到关键词搜索（不影响监测账号列表）
 python src/01_crawl_twitter.py "原油 OR crude" 50
+
+# 只回补 USDA/EIA/CFTC/NOAA/FAO 等官方账号自 2026-07-01 起的商品相关推文
+python src/01_crawl_twitter.py --official-backfill
 ```
+
+`--official-backfill` 可安全重复执行：每个账号以数据库内最新推文时间为水位线，
+发生 X 限流时再次运行会续抓而不会重复入库。
 
 写入时以 `source_url`(推文永久链接) 做唯一键，`on conflict` 时只更新正文，
 不会重复入库。`impact_score` / `ai_summary` 留空，由后续 AI 分析步骤回填。

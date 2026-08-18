@@ -44,9 +44,9 @@ COMMODITY_RULES = [
     ("不锈钢", ["不锈钢"]),
     ("硅铁锰硅", ["硅铁", "锰硅"]),
     # 能源
-    ("原油", ["crude", "oil", "原油", "石油", "wti", "brent", "布伦特"]),
+    ("原油", ["crude", "crude oil", "crudeoil", "oil", "原油", "石油", "wti", "brent", "布伦特"]),
     ("成品油", ["fuel oil", "diesel", "gasoline", "petrol", "jet fuel", "heating oil",
-                "refiner", "refining", "refinery", "成品油", "柴油", "汽油"]),
+                "petroleum", "petroleum products", "refiner", "refining", "refinery", "成品油", "柴油", "汽油"]),
     ("燃料油", ["燃料油", "燃油"]),
     ("沥青", ["沥青", "bitumen"]),
     ("天然气", ["natural gas", "天然气", "lng"]),
@@ -66,7 +66,7 @@ COMMODITY_RULES = [
     ("甲醇", ["甲醇", "methanol"]),
     ("PTA", ["pta"]),
     ("乙二醇", ["乙二醇"]),
-    ("塑料", ["pvc", "聚丙烯", "聚氯乙烯", "塑料", "聚乙烯"]),
+    ("塑料", ["pvc", "plastic", "plastics", "聚丙烯", "聚氯乙烯", "塑料", "聚乙烯"]),
     ("尿素", ["尿素", "urea"]),
     ("纯碱玻璃", ["纯碱", "soda ash", "玻璃"]),
     ("苯乙烯", ["苯乙烯", "styrene"]),
@@ -77,6 +77,8 @@ COMMODITY_RULES = [
     ("新能源", ["battery", "电池", "锂电池", "锂电", "储能", "新能源", "电动"]),
     # 高精度专题 / 机构
     ("USDA报告", ["usda"]),
+    ("农业天气", ["drought", "crop progress", "crop condition", "precipitation", "monsoon",
+                "enso", "el nino", "la nina", "weather", "干旱", "降水", "作物进度", "作物优良率"]),
     ("出口销售", ["export sales", "export sale"]),
     ("基金持仓", ["cftc", "managed money", "持仓"]),
     ("OPEC", ["opec"]),
@@ -107,17 +109,24 @@ EMOJI_RE = re.compile(
 )
 
 
+def contains_keyword(text: str, keyword: str) -> bool:
+    """匹配品种关键词；英文词使用边界，避免把 ``soil`` 误判为 ``oil``。"""
+    if keyword.isascii() and re.fullmatch(r"[a-z0-9]+(?: [a-z0-9]+)*", keyword):
+        return re.search(rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])", text) is not None
+    return keyword in text
+
+
 def is_relevant(text: str):
     """商品相关性白名单过滤。命中任意品种关键词 -> True（入库），否则 False（丢弃）。"""
     if not text:
         return False
     t = text.lower()
-    return any(k in t for _, kws in COMMODITY_RULES for k in kws)
+    return any(contains_keyword(t, k) for _, kws in COMMODITY_RULES for k in kws)
 
 
 def detect_topics(text: str):
     t = text.lower()
-    return [name for name, kws in COMMODITY_RULES if any(k in t for k in kws)]
+    return [name for name, kws in COMMODITY_RULES if any(contains_keyword(t, k) for k in kws)]
 
 
 def detect_countries(text: str):

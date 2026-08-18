@@ -18,9 +18,10 @@
 
 运行：
   $env:DATABASE_URL="postgresql://..."      # PowerShell
-  python src/01_crawl_twitter.py                       # 监测 MONITOR_USERS（默认 kannbwx），增量
-  python src/01_crawl_twitter.py 100                   # 监测模式，单次最多 100 条
-  python src/01_crawl_twitter.py "原油 OR crude" 50    # 临时切到关键词搜索模式（不影响监测账号）
+ python src/01_crawl_twitter.py                       # 监测 MONITOR_USERS（默认 kannbwx），增量
+ python src/01_crawl_twitter.py 100                   # 监测模式，单次最多 100 条
+  python src/01_crawl_twitter.py --official-backfill  # 官方账号从 2026-07-01 起补抓（可重复续跑）
+ python src/01_crawl_twitter.py "原油 OR crude" 50    # 临时切到关键词搜索模式（不影响监测账号）
 """
 import asyncio
 import json
@@ -78,6 +79,7 @@ ACCOUNT_SINCE = {
     "Tyne_Ag": "2026-01-01",
 }
 BACKFILL_LIMIT = 150                          # 免费账号通常约 145 条历史额度，避免一次性触发限流
+OFFICIAL_SINCE_DATE = "2026-07-01"           # 官方机构资讯页的统一回补起点
 
 # ---- 关键词搜索模式（仅在命令行传入查询词时启用）----
 DEFAULT_QUERY = "futures OR 期货"
@@ -230,13 +232,13 @@ def tweet_to_row(t) -> dict:
     }
 
 
-async def scrape_accounts(api: API, users, limit: int):
+async def scrape_accounts(api: API, users, limit: int, first_since: str = None):
     """账号监测模式：库空→从 START_DATE 补历史；库有数据→只抓比最新更晚的（带 1 天缓冲防漏）。"""
     rows = []
     for user in users:
         last = get_last_pub_date(user)
         if last is None:
-            since_str = ACCOUNT_SINCE.get(user, START_DATE)
+            since_str = first_since or ACCOUNT_SINCE.get(user, START_DATE)
             lim = BACKFILL_LIMIT
             mode = "backfill"
         else:
@@ -253,6 +255,21 @@ async def scrape_accounts(api: API, users, limit: int):
         print(f"user={user} mode={mode} since={since_str} limit={lim} fetched={len(batch)}")
         rows.extend(batch)
     return dedupe(rows)
+
+
+async def scrape_official_backfill(api: API):
+    """回补官方机构账号自 2026-07-01 起的内容。
+
+    每个账号的最新入库时间都会作为下次运行的水位线，所以即使 X 在中途限流，
+    重新执行同一命令也只会续抓缺失内容，不会产生重复记录。
+    """
+    print(
+        f"mode=official_backfill users={ROTATING_MONITOR_USERS} "
+        f"since={OFFICIAL_SINCE_DATE} per_user_limit={BACKFILL_LIMIT}"
+    )
+    return await scrape_accounts(
+        api, ROTATING_MONITOR_USERS, BACKFILL_LIMIT, first_since=OFFICIAL_SINCE_DATE
+    )
 
 
 async def scrape_search(api: API, query: str, limit: int):
@@ -361,8 +378,11 @@ async def main_async():
         print("no_active_accounts = true; 请先在 cookies.txt 或 accounts.txt 提供登录身份后重试")
         return 1
 
+    # --official-backfill 优先：只回补官方机构账号，不混入个人账号或关键词搜索结果。
+    if len(sys.argv) > 1 and sys.argv[1] == "--official-backfill":
+        rows = await scrape_official_backfill(api)
     # 命令行传入查询词（非纯数字）→ 关键词搜索模式；否则 → 账号监测模式
-    if len(sys.argv) > 1 and not sys.argv[1].isdigit():
+    elif len(sys.argv) > 1 and not sys.argv[1].isdigit():
         query = sys.argv[1]
         limit = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].isdigit() else DEFAULT_LIMIT
         print(f"mode=search query={query} limit={limit}")
