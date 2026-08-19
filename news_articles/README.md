@@ -71,6 +71,22 @@ python src/01_crawl_twitter.py --official-backfill
 `--official-backfill` 可安全重复执行：每个账号以数据库内最新推文时间为水位线，
 发生 X 限流时再次运行会续抓而不会重复入库。
 
+## 每日 PDF 简报
+
+脚本 [`src/05_send_daily_pdf_report.py`](./src/05_send_daily_pdf_report.py) 会读取 Supabase 的
+期权、期货、套保公告与新闻状态，生成 PDF 后通过 SMTP 发送；PDF 仅使用系统临时目录，
+投递完成后立即删除。Windows 计划任务 `Yongfeng_Daily_PDF_Report` 设置为每天 09:10（北京时间）。
+
+需要在 Windows **用户环境变量**中保存以下值，真实授权码不得提交至 Git：
+
+```text
+DATABASE_URL=postgresql://...
+REPORT_SMTP_PASSWORD=<邮箱 SMTP 授权码>
+```
+
+默认发送和收件地址都是 `2221078228@qq.com`，如需更改可另设 `REPORT_EMAIL_FROM` 与
+`REPORT_EMAIL_TO`。默认 SMTP 服务器为 `smtp.qq.com:465`。
+
 写入时以 `source_url`(推文永久链接) 做唯一键，`on conflict` 时只更新正文，
 不会重复入库。`impact_score` / `ai_summary` 留空，由后续 AI 分析步骤回填。
 
