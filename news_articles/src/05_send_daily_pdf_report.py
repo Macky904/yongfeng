@@ -16,14 +16,15 @@ from xml.sax.saxutils import escape
 
 import psycopg2
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 LOG_DIR = ROOT / "logs"
@@ -149,6 +150,7 @@ def fetch_report_data(database_url: str, now: datetime):
 
 
 def build_pdf(path: str, now: datetime, expected_day: date, status_rows, news, alerts, classified, unresolved):
+    """生成一份两页内、适合邮件阅读的商品研究晨报风格 PDF。"""
     # 微软雅黑覆盖中英文，避免 CID 中文字体将英文标题拆散显示。
     font_path = Path(os.environ.get("REPORT_FONT_PATH", r"C:\Windows\Fonts\msyh.ttc"))
     if font_path.exists():
@@ -157,44 +159,157 @@ def build_pdf(path: str, now: datetime, expected_day: date, status_rows, news, a
     else:
         font_name = "STSong-Light"
         pdfmetrics.registerFont(UnicodeCIDFont(font_name))
+    navy, ink, muted = "#102A43", "#243B53", "#627D98"
+    teal, green, amber, red = "#0F766E", "#137A4A", "#A15C00", "#B42318"
+    pale_blue, pale_green, pale_amber, pale_red = "#EAF2F8", "#EAF7EE", "#FFF5E5", "#FDECEC"
     styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(name="CNTitle", parent=styles["Title"], fontName=font_name, fontSize=19, leading=25, alignment=TA_CENTER))
-    styles.add(ParagraphStyle(name="CNHead", parent=styles["Heading2"], fontName=font_name, fontSize=12, leading=17, textColor=colors.HexColor("#1F4E78"), spaceBefore=8, spaceAfter=5))
-    styles.add(ParagraphStyle(name="CNBody", parent=styles["BodyText"], fontName=font_name, fontSize=8.8, leading=13))
-    styles.add(ParagraphStyle(name="CNAlert", parent=styles["BodyText"], fontName=font_name, fontSize=9, leading=14, textColor=colors.HexColor("#9C1C1C")))
-    doc = SimpleDocTemplate(path, pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm, topMargin=14 * mm, bottomMargin=14 * mm)
-    story = [
-        Paragraph("永丰数据仓 - 每日数据状态简报", styles["CNTitle"]),
-        Spacer(1, 4 * mm),
-        Paragraph(f"生成时间：{now:%Y-%m-%d %H:%M}（北京时间） | 国内/外盘目标交易日：{expected_day}", styles["CNBody"]),
-        Paragraph("数据更新状态", styles["CNHead"]),
-    ]
-    status_table = Table([["模块", "最新时间", "累计条数", "状态", "检查规则"]] + status_rows, colWidths=[30 * mm, 37 * mm, 24 * mm, 19 * mm, 55 * mm])
-    status_table.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), font_name), ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D9EAF7")), ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#B7C9D6")),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F7FAFC")]),
-        ("LEFTPADDING", (0, 0), (-1, -1), 4), ("RIGHTPADDING", (0, 0), (-1, -1), 4), ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    def style(name, size, leading, color=ink, **kwargs):
+        styles.add(ParagraphStyle(name=name, parent=styles["BodyText"], fontName=font_name,
+                                  fontSize=size, leading=leading, textColor=colors.HexColor(color), **kwargs))
+    style("Masthead", 21, 27, "#FFFFFF", alignment=TA_LEFT)
+    style("MastheadMeta", 8.2, 12, "#D9EAF7")
+    style("Section", 11.5, 15, navy, spaceBefore=10, spaceAfter=5)
+    style("Body", 8.6, 13)
+    style("Small", 7.4, 10.5, muted)
+    style("TableHead", 7.7, 10, "#FFFFFF", alignment=TA_LEFT)
+    style("TableCell", 8, 11.5)
+    style("KpiLabel", 7.6, 10, muted)
+    style("KpiValue", 12.5, 16, navy)
+    style("KpiState", 8, 11)
+    style("NewsTitle", 9, 13, ink)
+    style("Alert", 8.5, 12.5, red)
+
+    def paragraph(value, name="Body"):
+        return Paragraph(escape(str(value or "-")), styles[name])
+
+    def status_colours(status):
+        if status == "正常":
+            return green, pale_green
+        if status == "失败":
+            return red, pale_red
+        return amber, pale_amber
+
+    def kpi_card(row):
+        label, latest, total, status, _ = row
+        state_colour, background = status_colours(status)
+        content = [
+            [paragraph(label, "KpiLabel")],
+            [paragraph(latest, "KpiValue")],
+            [paragraph(f"{status}  |  {total} 条", "KpiState")],
+        ]
+        card = Table(content, colWidths=[39.5 * mm])
+        card.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(background)),
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9E2EC")),
+            ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor(state_colour)),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ]))
+        return card
+
+    def footer(canvas, doc_obj):
+        canvas.saveState()
+        canvas.setStrokeColor(colors.HexColor("#D9E2EC"))
+        canvas.line(doc_obj.leftMargin, 11 * mm, A4[0] - doc_obj.rightMargin, 11 * mm)
+        canvas.setFont(font_name, 7)
+        canvas.setFillColor(colors.HexColor(muted))
+        canvas.drawString(doc_obj.leftMargin, 7 * mm, "永丰数据仓 | 仅作数据运行监控与资讯汇总")
+        canvas.drawRightString(A4[0] - doc_obj.rightMargin, 7 * mm, f"第 {doc_obj.page} 页")
+        canvas.restoreState()
+
+    doc = SimpleDocTemplate(path, pagesize=A4, leftMargin=14 * mm, rightMargin=14 * mm,
+                            topMargin=12 * mm, bottomMargin=17 * mm)
+    masthead = Table([[Paragraph("永丰商品数据晨报", styles["Masthead"])],
+                      [Paragraph(f"DAILY COMMODITY BRIEF  |  {now:%Y.%m.%d}  {now:%H:%M} 北京时间", styles["MastheadMeta"])]],
+                     colWidths=[182 * mm])
+    masthead.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(navy)),
+        ("LEFTPADDING", (0, 0), (-1, -1), 11), ("RIGHTPADDING", (0, 0), (-1, -1), 11),
+        ("TOPPADDING", (0, 0), (-1, 0), 10), ("BOTTOMPADDING", (0, 0), (-1, 0), 1),
+        ("TOPPADDING", (0, 1), (-1, 1), 1), ("BOTTOMPADDING", (0, 1), (-1, 1), 9),
     ]))
-    story += [status_table, Paragraph("套保公告识别", styles["CNHead"]), Paragraph(f"近两日：已识别 {classified} 条；待复核 {unresolved} 条。", styles["CNBody"])]
-    story.append(Paragraph("重点海外资讯（近 24 小时）", styles["CNHead"]))
-    if news:
-        for source, topic, title, published, url in news:
-            line = (
-                f"<b>[{escape(str(source))} | {escape(str(topic))}]</b> {escape(str(title))}"
-                f"<br/><font size=7>{escape(display_time(published))}  {escape(str(url or ''))}</font>"
-            )
-            story.append(Paragraph(line, styles["CNBody"]))
-            story.append(Spacer(1, 2 * mm))
-    else:
-        story.append(Paragraph("近 24 小时没有可展示的重点资讯。", styles["CNBody"]))
-    story.append(Paragraph("异常与待处理事项", styles["CNHead"]))
+    story = [masthead, Spacer(1, 5 * mm)]
+    story.append(Paragraph("数据健康概览", styles["Section"]))
+    cards = [kpi_card(row) for row in status_rows]
+    story.append(Table([cards], colWidths=[43 * mm] * 4, hAlign="LEFT", style=[
+        ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3), ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    story.append(Spacer(1, 4 * mm))
+    story.append(Paragraph(f"检查口径：国内及外盘目标交易日为 {expected_day}；资讯统计为近 24 小时；套保公告按前一日更新情况检查。", styles["Small"]))
+    story.append(Paragraph("数据状态明细", styles["Section"]))
+    table_data = [[Paragraph(x, styles["TableHead"]) for x in ["模块", "最新时间", "累计条数", "状态", "检查口径"]]]
+    for label, latest, total, status, note in status_rows:
+        state_colour, state_bg = status_colours(status)
+        table_data.append([paragraph(label, "TableCell"), paragraph(latest, "TableCell"), paragraph(total, "TableCell"),
+                           Paragraph(f'<font color="{state_colour}"><b>{escape(status)}</b></font>', styles["TableCell"]),
+                           paragraph(note, "Small")])
+    status_table = Table(table_data, colWidths=[33 * mm, 40 * mm, 24 * mm, 20 * mm, 65 * mm], repeatRows=1)
+    status_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(navy)),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.5, colors.HexColor(navy)),
+        ("GRID", (0, 1), (-1, -1), 0.25, colors.HexColor("#D9E2EC")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F7FAFC")]),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5), ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    story.append(status_table)
+    story.append(Paragraph("套保公告识别", styles["Section"]))
+    hedge_state, hedge_bg = (green, pale_green) if not unresolved else (amber, pale_amber)
+    hedge_strip = Table([[Paragraph(f"近两日已识别 <b>{classified}</b> 条公告；待人工复核 <b>{unresolved}</b> 条。", styles["Body"]),
+                          Paragraph("原文未明确品种的公告将保留为空，避免错误归类。", styles["Small"])]], colWidths=[91 * mm, 91 * mm])
+    hedge_strip.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(hedge_bg)),
+                                     ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor(hedge_state)),
+                                     ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                                     ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+                                     ("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+    story.append(hedge_strip)
+    alert_title = Paragraph("异常与待处理事项", styles["Section"])
     if alerts:
-        for alert in alerts:
-            story.append(Paragraph(f"• {alert}", styles["CNAlert"]))
+        alert_rows = [[Paragraph(f"<b>!</b>  {escape(alert)}", styles["Alert"])] for alert in alerts]
+        alert_box = Table(alert_rows, colWidths=[182 * mm])
+        alert_box.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(pale_red)),
+            ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor(red)),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+            ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
     else:
-        story.append(Paragraph("• 未检测到需要人工处理的异常。", styles["CNBody"]))
-    doc.build(story)
+        alert_box = Table([[Paragraph("✓  未检测到需要人工处理的异常。", styles["Body"])]], colWidths=[182 * mm])
+        alert_box.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(pale_green)),
+                                       ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor(green)),
+                                       ("LEFTPADDING", (0, 0), (-1, -1), 8), ("TOPPADDING", (0, 0), (-1, -1), 6),
+                                       ("BOTTOMPADDING", (0, 0), (-1, -1), 6)]))
+    # 固定在资讯前展示，避免报警标题和内容被拆到不同页面。
+    story.append(KeepTogether([alert_title, alert_box]))
+    # 新闻单独从第二页开始，保证状态页完整，资讯页也有一致的阅读节奏。
+    story.append(PageBreak())
+    story.append(Paragraph("重点海外资讯", styles["Section"]))
+    story.append(Paragraph("近 24 小时采集到的官方机构与海外社交媒体商品资讯", styles["Small"]))
+    if news:
+        news_blocks = []
+        for source, topic, title, published, url in news:
+            domain = urlparse(str(url or "")).netloc.replace("www.", "") or "原文链接"
+            tag = f"{escape(str(source))}  /  {escape(str(topic))}"
+            link = escape(str(url or ""))
+            link_text = f'<a href="{link}" color="{teal}">{escape(domain)}</a>' if link else "无原文链接"
+            news_table = Table([[Paragraph(f'<font color="{teal}"><b>{tag}</b></font>', styles["Small"]), Paragraph(display_time(published), styles["Small"])],
+                                [Paragraph(escape(str(title or "未命名资讯")), styles["NewsTitle"]), Paragraph(link_text, styles["Small"])]],
+                               colWidths=[138 * mm, 44 * mm])
+            news_table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F7FAFC")),
+                ("LINEBEFORE", (0, 0), (0, -1), 2.5, colors.HexColor(teal)),
+                ("BOX", (0, 0), (-1, -1), 0.25, colors.HexColor("#D9E2EC")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+                ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ]))
+            news_blocks.extend([KeepTogether([news_table, Spacer(1, 2.2 * mm)])])
+        story.extend(news_blocks)
+    else:
+        story.append(Paragraph("近 24 小时没有可展示的重点资讯。", styles["Body"]))
+    doc.build(story, onFirstPage=footer, onLaterPages=footer)
 
 
 def send_email(pdf_path: str, now: datetime):
