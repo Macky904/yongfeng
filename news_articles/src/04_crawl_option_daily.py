@@ -18,8 +18,11 @@ import time
 import socket
 import random
 import logging
+import threading
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import psycopg2
 import akshare as ak
 from datetime import date
@@ -39,15 +42,51 @@ def _request_with_timeout(session, method, url, **kwargs):
 
 requests.sessions.Session.request = _request_with_timeout
 
+# AkShare 的新浪商品期权函数会重复访问同一个入口页。复用一个带浏览器请求头的
+# Session，并将所有请求做全局节流，避免每个合约都新建 TLS 连接而触发新浪断连。
+SINA_REQUEST_INTERVAL_SECONDS = float(os.environ.get("SINA_REQUEST_INTERVAL_SECONDS", "0.6"))
+SINA_SESSION = requests.Session()
+SINA_SESSION.headers.update({
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Referer": "https://stock.finance.sina.com.cn/futures/view/optionsDP.php/pg_o/dce",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36",
+})
+SINA_SESSION.mount("https://", HTTPAdapter(max_retries=Retry(
+    total=2, connect=2, read=2, other=2, backoff_factor=1,
+    status_forcelist=(429, 500, 502, 503, 504), allowed_methods=frozenset({"GET"}),
+    raise_on_status=False,
+)))
+_ORIGINAL_GET = requests.get
+_SINA_REQUEST_LOCK = threading.Lock()
+_LAST_SINA_REQUEST_AT = 0.0
+
+
+def _sina_get(url, **kwargs):
+    """为 AkShare 内部的 requests.get 注入复用会话、有限重试与全局限速。"""
+    global _LAST_SINA_REQUEST_AT
+    if "stock.finance.sina.com.cn" not in str(url):
+        return _ORIGINAL_GET(url, **kwargs)
+    with _SINA_REQUEST_LOCK:
+        wait_seconds = SINA_REQUEST_INTERVAL_SECONDS - (time.monotonic() - _LAST_SINA_REQUEST_AT)
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+        response = SINA_SESSION.get(url, **kwargs)
+        _LAST_SINA_REQUEST_AT = time.monotonic()
+        return response
+
+
+requests.get = _sina_get
+
 DATABASE_URL = os.environ["DATABASE_URL"]
 START = date(2026, 7, 1)
 BASE_DIR = Path(__file__).resolve().parents[1]
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 LOG = logging.getLogger("option_daily")
-# 新浪接口会对连续的大量合约请求限流。3 个并发连接在时效与稳定性之间取平衡；
+# 新浪接口会对连续的大量合约请求限流。2 个并发连接在时效与稳定性之间取平衡；
 # 如需排查可用 OPTION_WORKERS=1 临时退回串行。
-OPTION_WORKERS = max(1, min(int(os.environ.get("OPTION_WORKERS", "3")), 6))
+OPTION_WORKERS = max(1, min(int(os.environ.get("OPTION_WORKERS", "2")), 6))
 SINA_RETRIES = max(1, int(os.environ.get("SINA_RETRIES", "4")))
 VARIETY_COOLDOWN_SECONDS = float(os.environ.get("VARIETY_COOLDOWN_SECONDS", "4"))
 
