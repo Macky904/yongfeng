@@ -33,9 +33,11 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 LOG = logging.getLogger("option_daily")
-# 新浪接口有访问频率限制。4 个并发连接将原本逐个等待的合约请求缩短为约 1/4，
-# 同时仍保留每个请求的重试机制；可用 OPTION_WORKERS=1 临时退回串行。
-OPTION_WORKERS = max(1, min(int(os.environ.get("OPTION_WORKERS", "4")), 6))
+# 新浪接口会对连续的大量合约请求限流。3 个并发连接在时效与稳定性之间取平衡；
+# 如需排查可用 OPTION_WORKERS=1 临时退回串行。
+OPTION_WORKERS = max(1, min(int(os.environ.get("OPTION_WORKERS", "3")), 6))
+SINA_RETRIES = max(1, int(os.environ.get("SINA_RETRIES", "4")))
+VARIETY_COOLDOWN_SECONDS = float(os.environ.get("VARIETY_COOLDOWN_SECONDS", "4"))
 
 # 用户想要的品种 -> akshare/新浪实际品种名
 VARIETY_MAP = {
@@ -50,28 +52,38 @@ CODE_RE = re.compile(r"^([a-z]+\d+)([CP])(\d+)$")
 
 
 def enumerate_codes(variety_sina: str):
-    """返回 [(symbol, type, underlying, strike), ...]"""
-    out = []
-    try:
-        unders = ak.option_commodity_contract_sina(symbol=variety_sina)["合约"].tolist()
-    except Exception as e:
-        print(f"  [WARN] contract_sina failed {variety_sina}: {e}")
-        return out
-    for u in unders:
+    """完整返回一个品种当前全部看涨/看跌合约；任何系列失败都不能静默跳过。"""
+    last_error = None
+    for attempt in range(1, SINA_RETRIES + 1):
         try:
-            tbl = ak.option_commodity_contract_table_sina(symbol=variety_sina, contract=u)
-            calls = tbl["看涨合约-看涨期权合约"].dropna().tolist()
-            puts = tbl["看跌合约-看跌期权合约"].dropna().tolist()
-        except Exception as e:
-            print(f"  [WARN] table failed {variety_sina}/{u}: {e}")
-            calls, puts = [], []
-        time.sleep(0.25)
-        for code in calls + puts:
-            m = CODE_RE.match(str(code).strip())
-            if not m:
-                continue
-            out.append((code, m.group(2), m.group(1), int(m.group(3))))
-    return out
+            contract_frame = ak.option_commodity_contract_sina(symbol=variety_sina)
+            unders = [str(value).strip() for value in contract_frame["合约"].dropna().tolist()]
+            if not unders:
+                raise RuntimeError("empty_underlying_series")
+            out = []
+            for underlying in unders:
+                table = ak.option_commodity_contract_table_sina(symbol=variety_sina, contract=underlying)
+                calls = table["看涨合约-看涨期权合约"].dropna().tolist()
+                puts = table["看跌合约-看跌期权合约"].dropna().tolist()
+                if not calls or not puts:
+                    raise RuntimeError(f"incomplete_option_chain:{underlying}:calls={len(calls)}:puts={len(puts)}")
+                for code in calls + puts:
+                    match = CODE_RE.match(str(code).strip())
+                    if not match:
+                        raise RuntimeError(f"unrecognized_option_code:{code}")
+                    out.append((str(code).strip(), match.group(2), match.group(1), int(match.group(3))))
+                time.sleep(0.35)
+            if not out:
+                raise RuntimeError("empty_option_chain")
+            LOG.info("[%s] source series=%d contracts=%d", variety_sina, len(unders), len(out))
+            return out
+        except Exception as exc:
+            last_error = exc
+            wait_seconds = min(20, 2 ** attempt) + random.random()
+            LOG.warning("[%s] source attempt %d/%d failed: %s; retry in %.1fs", variety_sina, attempt, SINA_RETRIES, exc, wait_seconds)
+            if attempt < SINA_RETRIES:
+                time.sleep(wait_seconds)
+    raise RuntimeError(f"source_contract_list_failed:{variety_sina}:{type(last_error).__name__}:{last_error}")
 
 
 def fetch_history(code: str):
@@ -144,8 +156,10 @@ def main():
     for variety, sina_name in VARIETY_MAP.items():
         t0 = time.time()
         codes = enumerate_codes(sina_name)
+        LOG.info("[%s] expected_contracts=%d", variety, len(codes))
         print(f"\n[{variety}] ({sina_name}) 合约数={len(codes)}")
         rows = []
+        failed_symbols = []
         # 同一品种内并发抓取、在主线程汇总，避免共享数据库连接。
         with ThreadPoolExecutor(max_workers=OPTION_WORKERS, thread_name_prefix="option") as pool:
             future_meta = {
@@ -159,12 +173,17 @@ def main():
                 except Exception as exc:  # 单个合约失败不阻断当日其它合约
                     LOG.warning("history worker failed %s: %s", sym, exc)
                     hist = []
+                if not hist:
+                    failed_symbols.append(sym)
+                    continue
                 rows.extend(
                     (variety, sym, otype, underlying, strike, d, o, h, l, c, v)
                     for d, o, h, l, c, v in hist
                 )
                 if i % 50 == 0 or i == len(codes):
                     LOG.info("[%s] processed %d/%d contracts, rows=%d", variety, i, len(codes), len(rows))
+        if failed_symbols:
+            raise RuntimeError(f"incomplete_history:{variety}:failed_contracts={len(failed_symbols)}:sample={','.join(failed_symbols[:5])}")
         print(f"[{variety}] 抓取行数={len(rows)}  用时 {time.time()-t0:.1f}s")
         if dry:
             if rows:
@@ -173,9 +192,18 @@ def main():
         n = upsert(rows)
         total += n
         print(f"[{variety}] 已写入 {n} 行")
+        # 让新浪服务端从上一品种的大量日线请求中恢复，避免后续品种被静默限流。
+        if variety != list(VARIETY_MAP)[-1]:
+            LOG.info("[%s] cooldown %.1fs before next variety", variety, VARIETY_COOLDOWN_SECONDS)
+            time.sleep(VARIETY_COOLDOWN_SECONDS)
     LOG.info("=== option daily update DONE. total rows=%d ===", total)
     print(f"\nDONE. 总写入行数={total}")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        # pythonw 的标准输出不可见；必须将失败栈写入文件日志并以非零状态结束任务。
+        LOG.exception("=== option daily update FAILED ===")
+        raise
