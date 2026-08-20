@@ -18,14 +18,26 @@ import time
 import socket
 import random
 import logging
+import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import psycopg2
 import akshare as ak
 from datetime import date
 from pathlib import Path
 
-# 安全网：所有网络请求最多 25s 超时，避免无超时的请求在后台无限挂起
-socket.setdefaulttimeout(25)
+# 安全网：AkShare 的新浪函数未显式传 timeout；仅设 socket 默认值不足以阻止
+# requests 长时间挂起。因此在此为所有 requests 调用注入确定超时。
+HTTP_TIMEOUT_SECONDS = float(os.environ.get("OPTION_HTTP_TIMEOUT_SECONDS", "15"))
+socket.setdefaulttimeout(HTTP_TIMEOUT_SECONDS)
+_ORIGINAL_REQUEST = requests.sessions.Session.request
+
+
+def _request_with_timeout(session, method, url, **kwargs):
+    kwargs.setdefault("timeout", HTTP_TIMEOUT_SECONDS)
+    return _ORIGINAL_REQUEST(session, method, url, **kwargs)
+
+
+requests.sessions.Session.request = _request_with_timeout
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 START = date(2026, 7, 1)
