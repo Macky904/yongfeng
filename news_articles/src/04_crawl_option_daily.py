@@ -138,10 +138,12 @@ def enumerate_codes(variety_sina: str):
 
 
 def fetch_history(code: str):
-    """返回该合约 2026-07-01 起的日线行 [(trade_date, o, h, l, c, v), ...]"""
+    """返回日线；[] 表示合约存在但新浪没有历史日线，None 表示真实抓取失败。"""
     for attempt in range(3):
         try:
             df = ak.option_commodity_hist_sina(symbol=code)
+            if df.empty:
+                return []
             rows = []
             for _, r in df.iterrows():
                 d = r["date"]
@@ -159,11 +161,54 @@ def fetch_history(code: str):
                 ))
             return rows
         except Exception as e:
+            # 新浪对无成交历史/尚未形成日线的合约会返回空文本，AkShare 解码为此错误。
+            # 这不是抓取失败，合约仍应保存到 option_contracts 目录表。
+            if "No value to decode" in str(e):
+                return []
             if attempt < 2:
                 time.sleep(0.5 + random.random())
             else:
-                print(f"  [WARN] hist failed {code}: {e}")
-    return []
+                LOG.warning("history failed %s: %s", code, e)
+    return None
+
+
+def upsert_contracts(variety, codes):
+    """写入完整合约目录，包含没有成交日线的远月/低流动性期权合约。"""
+    from psycopg2.extras import execute_values
+    create_sql = """
+    CREATE TABLE IF NOT EXISTS public.option_contracts (
+        symbol text PRIMARY KEY,
+        variety text NOT NULL,
+        option_type text NOT NULL,
+        underlying text NOT NULL,
+        strike numeric NOT NULL,
+        source text NOT NULL DEFAULT 'sina',
+        is_active boolean NOT NULL DEFAULT true,
+        first_seen_at timestamptz NOT NULL DEFAULT now(),
+        last_seen_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_option_contracts_variety ON public.option_contracts (variety);
+    CREATE INDEX IF NOT EXISTS idx_option_contracts_underlying ON public.option_contracts (underlying);
+    """
+    upsert_sql = """
+    INSERT INTO public.option_contracts
+      (symbol, variety, option_type, underlying, strike, source, is_active)
+    VALUES %s
+    ON CONFLICT (symbol) DO UPDATE SET
+      variety=EXCLUDED.variety, option_type=EXCLUDED.option_type,
+      underlying=EXCLUDED.underlying, strike=EXCLUDED.strike,
+      source=EXCLUDED.source, is_active=true,
+      last_seen_at=now(), updated_at=now()
+    """
+    payload = [(symbol, variety, option_type, underlying, strike, "sina", True)
+               for symbol, option_type, underlying, strike in codes]
+    with psycopg2.connect(DATABASE_URL) as conn:
+        with conn.cursor() as cur:
+            cur.execute(create_sql)
+            execute_values(cur, upsert_sql, payload, page_size=500)
+        conn.commit()
+    LOG.info("[%s] full contract catalog upserted=%d", variety, len(payload))
 
 
 def upsert(rows):
@@ -209,8 +254,11 @@ def main():
         codes = enumerate_codes(sina_name)
         LOG.info("[%s] expected_contracts=%d", variety, len(codes))
         print(f"\n[{variety}] ({sina_name}) 合约数={len(codes)}")
+        if not dry:
+            upsert_contracts(variety, codes)
         rows = []
         failed_symbols = []
+        no_history_symbols = []
         # 同一品种内并发抓取、在主线程汇总，避免共享数据库连接。
         with ThreadPoolExecutor(max_workers=OPTION_WORKERS, thread_name_prefix="option") as pool:
             future_meta = {
@@ -223,9 +271,12 @@ def main():
                     hist = future.result()
                 except Exception as exc:  # 单个合约失败不阻断当日其它合约
                     LOG.warning("history worker failed %s: %s", sym, exc)
-                    hist = []
-                if not hist:
+                    hist = None
+                if hist is None:
                     failed_symbols.append(sym)
+                    continue
+                if not hist:
+                    no_history_symbols.append(sym)
                     continue
                 rows.extend(
                     (variety, sym, otype, underlying, strike, d, o, h, l, c, v)
@@ -235,6 +286,8 @@ def main():
                     LOG.info("[%s] processed %d/%d contracts, rows=%d", variety, i, len(codes), len(rows))
         if failed_symbols:
             raise RuntimeError(f"incomplete_history:{variety}:failed_contracts={len(failed_symbols)}:sample={','.join(failed_symbols[:5])}")
+        if no_history_symbols:
+            LOG.info("[%s] contracts_without_dayline=%d sample=%s", variety, len(no_history_symbols), ",".join(no_history_symbols[:5]))
         print(f"[{variety}] 抓取行数={len(rows)}  用时 {time.time()-t0:.1f}s")
         if dry:
             if rows:
