@@ -1,5 +1,5 @@
-# 外盘日线任务启动器：由 Windows 任务计划程序调用。
-# 显式从当前 Windows 用户环境读取配置，避免任务进程未继承环境变量而静默退出。
+# Windows Task Scheduler launcher for the foreign futures daily updater.
+# Keep executable strings ASCII-only for Windows PowerShell 5 encoding compatibility.
 
 $ErrorActionPreference = 'Stop'
 $baseDir = Split-Path -Parent $PSCommandPath
@@ -19,15 +19,18 @@ try {
     $env:HTTP_PROXY = [Environment]::GetEnvironmentVariable('HTTP_PROXY', 'User')
 
     if ([string]::IsNullOrWhiteSpace($env:DATABASE_URL)) {
-        throw 'Windows 用户环境变量 DATABASE_URL 未设置。'
+        throw 'DATABASE_URL user environment variable is missing.'
     }
 
     $python = 'C:\Users\Macky\.workbuddy\binaries\python\envs\default\Scripts\python.exe'
     $script = Join-Path $baseDir 'update_daily_tv.py'
-    if (-not (Test-Path -LiteralPath $python)) { throw "Python 不存在：$python" }
-    if (-not (Test-Path -LiteralPath $script)) { throw "更新脚本不存在：$script" }
+    if (-not (Test-Path -LiteralPath $python)) { throw "Python not found: $python" }
+    if (-not (Test-Path -LiteralPath $script)) { throw "Updater not found: $script" }
 
-    Write-LauncherLog 'START: configuration loaded; launching foreign futures updater.'
+    Write-LauncherLog 'START: configuration loaded; launching updater.'
+    # The updater maintains its own UTF-8 file log.  Do not redirect native
+    # stderr here: Windows PowerShell 5 writes redirected native output as
+    # UTF-16 and makes diagnostic logs unreadable.
     & $python $script
     $exitCode = $LASTEXITCODE
     Write-LauncherLog "DONE: updater exit_code=$exitCode"

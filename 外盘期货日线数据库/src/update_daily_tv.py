@@ -256,7 +256,11 @@ def main():
         log.error("missing_DATABASE_URL = true")
         return 1
 
-    contracts = load_contracts(url)
+    try:
+        contracts = load_contracts(url)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("load_contracts FAILED: %s", exc)
+        return 1
     completed_through = completed_trade_day()
     log.info(
         "=== update_daily_tv START: %d contracts; completed_through=%s (Beijing previous business day) ===",
