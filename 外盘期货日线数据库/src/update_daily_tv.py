@@ -159,22 +159,25 @@ def load_contracts(url: str):
 
 
 def upsert_contract(url: str, meta, bars, completed_through):
-    """写入已完成日线，并重写截止日以消除可能存在的盘中日线。
+    """写入已完成日线，并回写最近两个完整交易日。
 
     `trade_date` 始终保留 TradingView 原始日线的交易日标签。`completed_through`
     只决定当次运行最多允许写到哪一天：北京时间 8 月 21 日运行时，最多写入
     8 月 20 日。因而即使有人在 8 月 20 日晚间手动运行，也不会把美国盘中
-    的 8 月 20 日日线写入正式库。
+    的 8 月 20 日日线写入正式库。每次额外回写截止日前一工作日，确保
+    网络恢复后的延迟补跑也能覆盖此前可能残留的盘中值。
     """
     code, ctype, exch, xcode, variety, cmd, symbol_id, dmax = meta
+    refresh_from = previous_business_day(completed_through)
     new_rows = []
     for b in bars:
         d = datetime.fromtimestamp(b[0], tz=timezone.utc).date()
         if d > completed_through:
             continue
-        # 正常只追加新日期；但每次都允许覆盖“上一完整交易日”，以便将
-        # 早前意外写入的盘中 K 线替换成最终收盘 K 线。
-        if dmax is not None and d <= dmax and d != completed_through:
+        # 正常只追加新日期；另外总是回写最近两个完整交易日，以便将
+        # 早前意外写入的盘中 K 线替换成最终收盘 K 线。若有多日漏跑，
+        # 则保留 dmax 之后的全部数据用于补齐。
+        if dmax is not None and d <= dmax and d < refresh_from:
             continue
         new_rows.append((
             code, ctype, exch, xcode, variety, d,
@@ -187,11 +190,11 @@ def upsert_contract(url: str, meta, bars, completed_through):
     with psycopg2.connect(url, connect_timeout=15) as conn:
         with conn.cursor() as cur:
             # 一个成功返回的日线序列才会触发删除，避免源端临时无数据时误删。
-            # 删除截止日及其后的旧值，再写入本次经截止日过滤后的结果；这样可
-            # 自动清理盘中运行残留的“未来日期”。
+            # 删除回写窗口及其后的旧值，再写入本次经截止日过滤后的结果；这样可
+            # 自动清理盘中运行残留的“未来日期”，并修正延迟发现的盘中值。
             cur.execute(
                 "DELETE FROM public.futures_kline_daily WHERE contract_code=%s AND trade_date >= %s",
-                (code, completed_through),
+                (code, refresh_from),
             )
             cur.executemany(
                 """
