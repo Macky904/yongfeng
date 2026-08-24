@@ -42,6 +42,7 @@ def main():
     setup_logging()
     log = logging.getLogger("news_daily")
     log.info("=== news daily orchestration START ===")
+    failed = []
     for name in SCRIPTS:
         path = SRC / name
         if not path.exists():
@@ -57,10 +58,17 @@ def main():
                 cwd=str(SRC),
             )
             log.info("=== %s rc=%s ===", name, r.returncode)
+            if r.returncode != 0:
+                failed.append(f"{name}:rc={r.returncode}")
         except subprocess.TimeoutExpired:
             log.error("=== %s TIMEOUT(>600s) ===", name)
+            failed.append(f"{name}:timeout")
         except Exception as exc:  # noqa: BLE001
             log.exception("=== %s ERROR %s: %s ===", name, type(exc).__name__, exc)
+            failed.append(f"{name}:{type(exc).__name__}")
+    if failed:
+        log.error("=== news daily orchestration FAILED: %s ===", failed)
+        return 1
     log.info("=== news daily orchestration DONE ===")
     return 0
 

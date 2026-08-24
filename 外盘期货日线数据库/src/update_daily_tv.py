@@ -303,7 +303,10 @@ def main():
         log.info("MA recomputed for %s recent rows", ma_n)
     except Exception as exc:  # noqa: BLE001
         log.exception("MA recompute FAILED: %s", exc)
-    log.info("=== DONE: +%d rows across %d contracts; failed=%s ===", total_new, updated, failed)
+    if failed:
+        log.error("=== FAILED: +%d rows across %d contracts; failed=%s ===", total_new, updated, failed)
+        return 1
+    log.info("=== DONE: +%d rows across %d contracts; failed=[] ===", total_new, updated)
     return 0
 
 

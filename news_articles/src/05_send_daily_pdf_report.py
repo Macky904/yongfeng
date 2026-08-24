@@ -317,12 +317,12 @@ def send_email(pdf_path: str, now: datetime):
     if not password:
         raise RuntimeError("missing_REPORT_SMTP_PASSWORD")
     message = EmailMessage()
-    message["Subject"] = f"永丰每日数据简报 - {now:%Y-%m-%d}"
+    message["Subject"] = f"每日商品数据简报 - {now:%Y-%m-%d}"
     message["From"] = REPORT_FROM
     message["To"] = REPORT_TO
-    message.set_content("附件为永丰数据仓每日 PDF 简报，包含数据状态、重点资讯与异常提醒。")
+    message.set_content("附件为每日商品数据 PDF 简报，包含数据状态、重点资讯与异常提醒。")
     with open(pdf_path, "rb") as file:
-        message.add_attachment(file.read(), maintype="application", subtype="pdf", filename=f"永丰每日数据简报_{now:%Y-%m-%d}.pdf")
+        message.add_attachment(file.read(), maintype="application", subtype="pdf", filename=f"每日商品数据简报_{now:%Y-%m-%d}.pdf")
     context = ssl.create_default_context()
     with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context, timeout=45) as server:
         server.login(REPORT_FROM, password)
