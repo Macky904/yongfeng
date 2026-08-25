@@ -79,7 +79,13 @@ while ($true) {
         if ($rc -ne 0) {
             $failed += "$($step.Name):rc=$rc"
             Write-WorkflowLog "STEP=$($step.Name) FAILED rc=$rc"
-            break
+            # The first two steps are prerequisites.  Foreign futures and
+            # news are independent after that point: a foreign-source outage
+            # must not prevent the news refresh from running.
+            if ($step.Name -eq 'hedging' -or $step.Name -eq 'options') {
+                break
+            }
+            continue
         }
         Write-WorkflowLog "STEP=$($step.Name) DONE"
     }
