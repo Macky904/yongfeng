@@ -32,10 +32,20 @@ function Load-UserEnvironment {
 
 $managedPython = 'C:\Users\Macky\.workbuddy\binaries\python\envs\default\Scripts\python.exe'
 $hedgingPython = 'C:\Users\Macky\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe'
+$hedgingDir = Get-ChildItem -LiteralPath $root -Directory | Where-Object {
+    Test-Path -LiteralPath (Join-Path $_.FullName 'src\04_incremental_update_postgres.py')
+} | Select-Object -First 1
+$foreignDir = Get-ChildItem -LiteralPath $root -Directory | Where-Object {
+    Test-Path -LiteralPath (Join-Path $_.FullName 'src\update_daily_tv.py')
+} | Select-Object -First 1
+
+if ($null -eq $hedgingDir) { throw 'Hedging source directory was not found.' }
+if ($null -eq $foreignDir) { throw 'Foreign futures source directory was not found.' }
+
 $steps = @(
-    @{ Name = 'hedging'; Python = $hedgingPython; Script = Join-Path $root '套期保值hedging_announcements\src\04_incremental_update_postgres.py'; WorkDir = Join-Path $root '套期保值hedging_announcements\src' },
+    @{ Name = 'hedging'; Python = $hedgingPython; Script = Join-Path $hedgingDir.FullName 'src\04_incremental_update_postgres.py'; WorkDir = Join-Path $hedgingDir.FullName 'src' },
     @{ Name = 'options'; Python = $managedPython; Script = Join-Path $newsSrc '04_crawl_option_daily.py'; WorkDir = $newsSrc },
-    @{ Name = 'foreign_futures'; Python = $managedPython; Script = Join-Path $root '外盘期货日线数据库\src\update_daily_tv.py'; WorkDir = Join-Path $root '外盘期货日线数据库\src' },
+    @{ Name = 'foreign_futures'; Python = $managedPython; Script = Join-Path $foreignDir.FullName 'src\update_daily_tv.py'; WorkDir = Join-Path $foreignDir.FullName 'src' },
     @{ Name = 'news'; Python = $managedPython; Script = Join-Path $newsSrc 'run_daily_news.py'; WorkDir = $newsSrc }
 )
 
